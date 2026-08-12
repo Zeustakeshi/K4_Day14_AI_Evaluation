@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness | Câu hỏi tư vấn mở khiến answer suy luận hợp lý thêm ngoài câu chữ context nhưng không sai fact — score rơi 0.6–0.8 vẫn chấp nhận. | Score < 0.6 trên câu hỏi về giá/bảo hành/chính sách — model bịa thông tin (hallucination) không có trong context, rủi ro cao vì khách hàng dựa vào đó ra quyết định. | Flag review thủ công; chặn deploy nếu dưới 0.6 trên nhóm câu hỏi transactional (giá, đổi trả, bảo hành). |
+| Answer Relevance | Câu hỏi adversarial/out-of-scope mà answer đúng đắn từ chối trả lời — có thể bị chấm relevance thấp dù hành vi đúng. | Score thấp trên câu hỏi in-scope rõ ràng — answer lạc đề, không giải quyết đúng intent, gây trải nghiệm tệ và tăng escalation. | Review lại prompt/retrieval cho case in-scope; dùng rubric riêng cho adversarial case thay vì relevance thuần. |
+| Context Recall | Câu hard/multi-hop cần tổng hợp nhiều document — retriever miss một phần evidence phụ nhưng vẫn đủ evidence chính. | Score thấp trên câu easy/single-doc — retriever miss cả evidence chính, lỗi retrieval nghiêm trọng ở tầng chunking/embedding cơ bản. | Kiểm tra lại chunk size, embedding model, top-k; sửa retriever trước khi tối ưu generation. |
+| Context Precision | Tập retrieved rộng lẫn 1-2 chunk liên quan nhưng rank thấp — chấp nhận nếu evidence chính vẫn đứng đầu và answer đúng. | Score rất thấp — phần lớn chunk không liên quan, gây nhiễu (distraction) làm faithfulness giảm theo, tốn cost/latency. | Tune reranking hoặc giảm top-k; tăng ngưỡng similarity khi retrieve. |
+| Completeness | Câu hỏi có sub-claim phụ không bắt buộc — answer đáp ứng phần chính, thiếu chi tiết bổ sung không critical, vẫn chấp nhận. | Score thấp trên câu có claim bắt buộc (điều kiện bảo hành, số ngày đổi trả) — thiếu thông tin cốt lõi gây hiểu lầm cho khách hàng. | Bổ sung expected-answer decomposition rõ hơn trong golden dataset; kiểm tra prompt có yêu cầu liệt kê đủ claims. |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -46,15 +46,19 @@ Ba bias thường gặp:
 
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Lấy một cặp answer (A, B) cho cùng một câu hỏi, chất lượng đã biết trước qua human label (vd A tốt hơn B). Chạy LLM judge hai lần:
+> - Condition 1: đưa A trước, B sau ("Answer 1: A, Answer 2: B").
+> - Condition 2: đảo vị trí, đưa B trước, A sau ("Answer 1: B, Answer 2: A").
+>
+> Nếu judge đổi lựa chọn theo vị trí (luôn chọn "Answer 1" bất kể nội dung) thay vì theo chất lượng thật, đó là dấu hiệu position bias. Lặp trên nhiều cặp và tính % lần judge đảo kết quả chỉ vì đổi vị trí.
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Rubric quy định điểm dựa trên số claim đúng/cần thiết, không dựa trên độ dài; đưa ví dụ minh hoạ answer ngắn nhưng đầy đủ vẫn chấm 5 điểm, answer dài nhưng lan man/redundant chấm thấp hơn. Thêm tiêu chí trừ điểm tường minh cho verbosity không cần thiết, và yêu cầu judge liệt kê claim tìm thấy trước khi cho điểm (thay vì đánh giá cảm tính theo độ dài).
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
-> *Câu trả lời:*
+> *Câu trả lời:* Vì judge có thể hệ thống hoá sai lệch (position, verbosity, self-preference) mà không tự nhận ra. Cần một tập nhỏ ground-truth do người chấm để đo agreement (vd Cohen's kappa) giữa judge và human; nếu agreement thấp thì phải chỉnh rubric/prompt trước khi tin dùng judge ở quy mô lớn — nếu không mọi quyết định (block deploy, so sánh model) dựa trên judge sẽ kế thừa toàn bộ bias mà không phát hiện được.
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +66,16 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness | ≥ 0.8 | Hallucination trên chatbot support (giá, bảo hành, chính sách) gây rủi ro trực tiếp cho khách hàng/pháp lý — không thể chấp nhận model bịa thông tin trước khi ra production. |
+| Answer Relevance | ≥ 0.7 | Answer đúng nhưng lạc đề vẫn khiến khách hàng phải hỏi lại/escalate; 0.7 chừa khoảng dung sai cho câu hỏi mơ hồ nhưng vẫn chặn regression rõ rệt về đúng intent. |
+| Completeness | ≥ 0.7 | Thiếu thông tin bắt buộc (điều kiện đổi trả, số ngày bảo hành) dẫn tới hướng dẫn sai cho khách hàng; ngưỡng 0.7 cho phép thiếu chi tiết phụ nhưng không cho thiếu claim cốt lõi. |
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
 > *Câu trả lời:*
+> - **Offline evaluation** (golden dataset, RAGAS/LLM-judge chạy trong CI/CD): dùng trước mỗi lần merge/deploy để chặn regression sớm, chi phí thấp, lặp lại được, nhưng chỉ phủ được các case đã biết trước trong dataset.
+> - **Online evaluation** (theo dõi metric trên traffic thật, A/B test, sampling judge trên response thực tế): dùng sau khi deploy để phát hiện drift, case ngoài golden dataset, và đo tác động thực tế lên user (vd CSAT, escalation rate) mà offline không mô phỏng được.
+> - **Human review**: dùng cho case adversarial/nhạy cảm (an toàn, pháp lý, PII), để calibrate LLM judge định kỳ, và khi offline/online score nằm trong vùng nghi ngờ (borderline) cần xác nhận cuối cùng trước khi thay đổi threshold hoặc ra quyết định lớn (rollback, đổi model).
 
 ---
 
